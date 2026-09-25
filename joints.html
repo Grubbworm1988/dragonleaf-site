@@ -4,6 +4,285 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Wrong Joints</title>
+  <style>
+    :root {
+      --bg: #12100d;
+      --card: #1c1914;
+      --ink: #e8e0d2;
+      --mute: #9a8f7e;
+      --leaf: #7a9a6a;
+      --warn: #c4a15a;
+      --bad: #b5684a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Georgia, "Times New Roman", serif;
+    }
+    header, .bar, .stage, footer {
+      max-width: 28rem;
+      margin: 0 auto;
+      padding: 0 1.1rem;
+    }
+    header { padding-top: 1.1rem; }
+    h1 { font-size: 1.35rem; margin: 0 0 .3rem; font-weight: 600; }
+    .sub { margin: 0; color: var(--mute); font-size: .95rem; line-height: 1.4; }
+    .bar { display: flex; gap: .4rem; flex-wrap: wrap; padding-top: .85rem; }
+    button {
+      font: inherit;
+      font-size: .85rem;
+      background: var(--card);
+      color: var(--ink);
+      border: 1px solid #2c261e;
+      padding: .4rem .65rem;
+      cursor: pointer;
+    }
+    button.on { border-color: var(--leaf); color: var(--leaf); }
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      margin-top: .75rem;
+      background: var(--card);
+      border: 1px solid #2c261e;
+      touch-action: manipulation;
+    }
+    .note {
+      margin: .75rem 0 0;
+      min-height: 4.6rem;
+      padding: .8rem .9rem;
+      background: var(--card);
+      border: 1px solid #2c261e;
+    }
+    .note b { color: var(--warn); font-weight: 600; }
+    .note p { margin: .3rem 0 0; color: var(--mute); line-height: 1.4; }
+    footer { padding: 1rem 1.1rem 2rem; color: #6d6558; font-size: .78rem; }
+  </style>
 </head>
-<body><p>placeholder</p></body>
+<body>
+  <header>
+    <h1>Wrong Joints</h1>
+    <p class="sub">Make the animal. Pull a pin or add one. It has to live with whatever you leave it.</p>
+  </header>
+  <div class="bar">
+    <button id="pull" class="on">pull pin</button>
+    <button id="add">add joint</button>
+    <button id="reset">reset giraffe</button>
+  </div>
+  <div class="stage">
+    <canvas id="c" width="360" height="280"></canvas>
+    <div class="note" id="note"></div>
+  </div>
+  <footer>Dragonleaf experiment. You are building it. Not a catalog.</footer>
+  <script>
+    const canvas = document.getElementById("c");
+    const ctx = canvas.getContext("2d");
+    const noteEl = document.getElementById("note");
+    let mode = "pull";
+    let pick = null;
+    let seed = 0;
+
+    const START = {
+      parts: [
+        { id: "body", name: "body", x: 130, y: 118, w: 108, h: 36, color: "#b89a62" },
+        { id: "neck", name: "neck", x: 214, y: 36, w: 16, h: 88, color: "#c4b07a" },
+        { id: "head", name: "head", x: 214, y: 14, w: 46, h: 24, color: "#e2d2a4" },
+        { id: "fl", name: "front left", x: 204, y: 150, w: 12, h: 96, color: "#c4b89a" },
+        { id: "fr", name: "front right", x: 178, y: 150, w: 12, h: 96, color: "#b8ac88" },
+        { id: "bl", name: "back left", x: 142, y: 150, w: 12, h: 96, color: "#c4b89a" },
+        { id: "br", name: "back right", x: 116, y: 150, w: 12, h: 96, color: "#b8ac88" }
+      ],
+      joints: [
+        ["body", "neck"],
+        ["neck", "head"],
+        ["body", "fl"],
+        ["body", "fr"],
+        ["body", "bl"],
+        ["body", "br"]
+      ]
+    };
+
+    let parts = [];
+    let joints = [];
+
+    function copyStart() {
+      parts = START.parts.map(p => ({ ...p, fallen: false }));
+      joints = START.joints.map(([a, b]) => ({ a, b }));
+      pick = null;
+      seed++;
+    }
+
+    function part(id) { return parts.find(p => p.id === id); }
+
+    function linked(id) {
+      const seen = new Set([id]);
+      const q = [id];
+      while (q.length) {
+        const cur = q.pop();
+        for (const j of joints) {
+          const n = j.a === cur ? j.b : j.b === cur ? j.a : null;
+          if (n && !seen.has(n)) { seen.add(n); q.push(n); }
+        }
+      }
+      return seen;
+    }
+
+    function pinPos(j) {
+      const A = part(j.a), B = part(j.b);
+      return { x: (cx(A) + cx(B)) / 2, y: (cy(A) + cy(B)) / 2 };
+    }
+    function cx(p) { return p.x + p.w / 2; }
+    function cy(p) { return p.y + p.h / 2; }
+
+    function settle() {
+      const grounded = linked("body");
+      const floor = 248;
+      for (const p of parts) {
+        if (p.id === "body") { p.fallen = false; continue; }
+        if (grounded.has(p.id)) {
+          p.fallen = false;
+          const home = START.parts.find(s => s.id === p.id);
+          p.x = home.x; p.y = home.y;
+        } else {
+          p.fallen = true;
+          p.y = floor - p.h;
+        }
+      }
+    }
+
+    function diagnose() {
+      const g = linked("body");
+      const legs = ["fl", "fr", "bl", "br"].filter(id => g.has(id)).length;
+      const headOn = g.has("head");
+      const neckOn = g.has("neck");
+      const extra = joints.filter(j =>
+        !START.joints.some(([a, b]) => (a === j.a && b === j.b) || (a === j.b && b === j.a))
+      ).length;
+
+      if (legs === 0 && !headOn) {
+        return ["rug with a separate skull", "Nothing is on the body. Add a hip pin, or a neck pin, or keep the pile. Your circus."];
+      }
+      if (legs === 0) {
+        return ["can't stand", "This giraffe is a body on the dirt. Add a joint at a hip — or two, if you want it to pretend."];
+      }
+      if (legs === 1) {
+        return ["one-leg lean", "One pin left. It can tip. It cannot walk. Add another hip, or pull the last one and own the rug."];
+      }
+      if (!headOn) {
+        return ["head on the floor", "Looks like it needs a joint at the neck if you want a face up there. Or leave it. Grazing just got honest."];
+      }
+      if (!neckOn && headOn) {
+        return ["head glued to ribs", "You skipped the neck. Legal. Weird. Add the neck back or live with a mailbox animal."];
+      }
+      if (extra && legs >= 3 && headOn) {
+        return ["standing, but wrong", "You added hardware nature did not order. If you like it, stop. If you don't, pull a pin."];
+      }
+      if (joints.length === START.joints.length && extra === 0) {
+        return ["stock giraffe", "Pull a pin to break it, or add a joint where one does not belong."];
+      }
+      return ["still standing", "It works. That does not mean it is finished. Pull one more and see what falls."];
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#2a241c";
+      ctx.fillRect(0, 252, canvas.width, 28);
+
+      for (const p of parts) {
+        ctx.fillStyle = p.fallen ? "#6a5a44" : p.color;
+        ctx.fillRect(p.x, p.y, p.w, p.h);
+        if (pick === p.id) {
+          ctx.strokeStyle = "#7a9a6a";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(p.x - 2, p.y - 2, p.w + 4, p.h + 4);
+        }
+      }
+      ctx.lineWidth = 2;
+      for (const j of joints) {
+        const A = part(j.a), B = part(j.b);
+        ctx.strokeStyle = "#3a342c";
+        ctx.beginPath();
+        ctx.moveTo(cx(A), cy(A));
+        ctx.lineTo(cx(B), cy(B));
+        ctx.stroke();
+        const pin = pinPos(j);
+        ctx.fillStyle = "#7a9a6a";
+        ctx.beginPath();
+        ctx.arc(pin.x, pin.y, 8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      const [title, line] = diagnose();
+      noteEl.innerHTML = "<b>" + title + "</b><p>" + line + "</p>";
+    }
+
+    function hitPart(x, y) {
+      for (let i = parts.length - 1; i >= 0; i--) {
+        const p = parts[i];
+        if (x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h) return p;
+      }
+      return null;
+    }
+    function hitJoint(x, y) {
+      for (const j of joints) {
+        const p = pinPos(j);
+        const dx = x - p.x, dy = y - p.y;
+        if (dx * dx + dy * dy <= 14 * 14) return j;
+      }
+      return null;
+    }
+
+    function toLocal(ev) {
+      const r = canvas.getBoundingClientRect();
+      const t = ev.changedTouches ? ev.changedTouches[0] : ev;
+      return {
+        x: (t.clientX - r.left) * (canvas.width / r.width),
+        y: (t.clientY - r.top) * (canvas.height / r.height)
+      };
+    }
+
+    function onTap(ev) {
+      ev.preventDefault();
+      const { x, y } = toLocal(ev);
+      if (mode === "pull") {
+        const j = hitJoint(x, y);
+        if (j) {
+          joints = joints.filter(o => o !== j);
+          settle();
+          draw();
+        }
+        return;
+      }
+      const p = hitPart(x, y);
+      if (!p) { pick = null; draw(); return; }
+      if (!pick || pick === p.id) { pick = p.id; draw(); return; }
+      const exists = joints.some(j =>
+        (j.a === pick && j.b === p.id) || (j.b === pick && j.a === p.id)
+      );
+      if (!exists) joints.push({ a: pick, b: p.id });
+      pick = null;
+      settle();
+      draw();
+    }
+
+    canvas.addEventListener("pointerdown", onTap);
+    document.getElementById("pull").onclick = function () {
+      mode = "pull"; pick = null;
+      this.classList.add("on");
+      document.getElementById("add").classList.remove("on");
+    };
+    document.getElementById("add").onclick = function () {
+      mode = "add"; pick = null;
+      this.classList.add("on");
+      document.getElementById("pull").classList.remove("on");
+    };
+    document.getElementById("reset").onclick = function () {
+      copyStart(); draw();
+    };
+
+    copyStart();
+    draw();
+  </script>
+</body>
 </html>

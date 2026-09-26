@@ -70,6 +70,8 @@
   <div class="bar">
     <button id="pull" class="on">pull pin</button>
     <button id="add">add joint</button>
+    <button id="replace">replace pin</button>
+    <button id="bend">bend</button>
     <button id="try">try</button>
     <button id="reset">reset giraffe</button>
   </div>
@@ -79,16 +81,29 @@
   </div>
   <footer>Dragonleaf experiment. Wrong Joints. Not a catalog.</footer>
   <script>
+/* Wrong Joints — giraffe motor.
+   Pull stiffens a socket. Part stays on.
+   Add inserts a hinge on a bone. Add does not restore a pulled pin.
+   Replace restores a dead socket only.
+   Bend poses a live pin.
+   Gravity drops the body. Feet plant. Head is not a fifth foot while standing.
+   Try = walk or crawl if it cannot stand, then a slow reach for the leaf.
+   No timer-lerp commute. No animal rewrite in this file.
+*/
 (function () {
   const canvas = document.getElementById("c");
   const ctx = canvas.getContext("2d");
   const noteEl = document.getElementById("note");
   const btnPull = document.getElementById("pull");
   const btnAdd = document.getElementById("add");
+  const btnReplace = document.getElementById("replace");
+  const btnBend = document.getElementById("bend");
   const btnTry = document.getElementById("try");
   const btnReset = document.getElementById("reset");
 
   const LEAF = { x: 310, y: 28 };
+  const FLOOR = 252;
+  const START = { x: 130, y: 130 };
 
   const DEFS = [
     { id: "neck", name: "neck", site: "neck", parent: "body", rest: -1.35, min: -2.4, max: -0.2, len: 78, ax: 48, ay: -8 },
@@ -105,19 +120,29 @@
 
   let mode = "pull";
   let trying = false;
+  let phase = "";
   let animId = null;
   let drag = null;
   let worldX = 0;
   let joints = [];
   let extras = [];
-  let body = { x: 130, y: 130 };
-  let pendingPull = null;
+  let body = { x: START.x, y: START.y, tilt: 0 };
+  let pendingTap = null;
+  let belly = false;
+  let gaitT = 0;
+  let reached = false;
+  let stall = 0;
+  let lastPlantX = 0;
 
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
-
+  function approach(v, t, s) {
+    const d = t - v;
+    if (Math.abs(d) <= s) return t;
+    return v + Math.sign(d) * s;
+  }
   function allJoints() { return joints.concat(extras); }
-
   function byId(id) { return allJoints().find(j => j.id === id); }
+  function isLive(j) { return j && j.present && j.live && !j.stiff; }
 
   function setNote(title, line) {
     noteEl.innerHTML = "<b>" + title + "</b><p>" + line + "</p>";
@@ -127,7 +152,45 @@
     mode = m;
     btnPull.classList.toggle("on", m === "pull");
     btnAdd.classList.toggle("on", m === "add");
+    btnReplace.classList.toggle("on", m === "replace");
+    btnBend.classList.toggle("on", m === "bend");
     btnTry.disabled = trying;
+  }
+
+  function childrenOf(id) {
+    return allJoints().filter(j => j.parent === id && j.present);
+  }
+
+  function chainEnd(j) {
+    let cur = j;
+    for (let n = 0; n < 12; n++) {
+      const kids = childrenOf(cur.id);
+      if (!kids.length) return cur;
+      cur = kids[0];
+    }
+    return cur;
+  }
+
+  function legRoots() {
+    return joints.filter(j => j.parent === "body" && (j.site === "hip" || j.site === "shoulder") && j.present);
+  }
+
+  function feet() {
+    return legRoots().map(chainEnd);
+  }
+
+  function sideOf(j) {
+    let cur = j;
+    for (let n = 0; n < 12; n++) {
+      if (cur.parent === "body") {
+        if (cur.site === "shoulder") return "front";
+        if (cur.site === "hip") return "rear";
+        return "other";
+      }
+      cur = byId(cur.parent);
+      if (!cur) return "other";
+    }
+    return "other";
   }
 
   function resetAll() {
@@ -135,38 +198,137 @@
       angle: d.rest, stiff: false, live: true, present: true
     }));
     extras = [];
-    body = { x: 130, y: 130 };
+    body = { x: START.x, y: START.y, tilt: 0 };
     worldX = 0;
     drag = null;
-    pendingPull = null;
+    pendingTap = null;
+    belly = false;
+    gaitT = 0;
+    reached = false;
+    stall = 0;
     trying = false;
+    phase = "";
     if (animId) { cancelAnimationFrame(animId); animId = null; }
+    settleGravity();
     setMode("pull");
-    setNote("stock giraffe", "Pull a pin to lock a bend. Add restores a stiff pin or puts a hinge where one does not belong. Try makes it walk and graze.");
+    setNote("stock giraffe", "Pull a pin to lock a bend. Add puts a hinge on a bone. Replace puts a pulled pin back. Bend poses a live joint. Try walks or crawls, then reaches.");
     draw();
   }
 
   function pose() {
     const map = {};
-    const originBody = { x: body.x + worldX, y: body.y };
+    const ox0 = body.x + worldX;
+    const oy0 = body.y;
+    const c = Math.cos(body.tilt || 0);
+    const s = Math.sin(body.tilt || 0);
 
     function place(j) {
       if (map[j.id]) return map[j.id];
       let ox, oy;
       if (j.parent === "body") {
-        ox = originBody.x + (j.ax || 0);
-        oy = originBody.y + (j.ay || 0);
+        const ax = j.ax || 0, ay = j.ay || 0;
+        ox = ox0 + ax * c - ay * s;
+        oy = oy0 + ax * s + ay * c;
       } else {
         const p = place(byId(j.parent));
         ox = p.tipX; oy = p.tipY;
       }
-      const tipX = ox + Math.cos(j.angle) * j.len;
-      const tipY = oy + Math.sin(j.angle) * j.len;
-      map[j.id] = { pinX: ox, pinY: oy, tipX: tipX, tipY: tipY };
+      map[j.id] = {
+        pinX: ox,
+        pinY: oy,
+        tipX: ox + Math.cos(j.angle + (j.parent === "body" ? (body.tilt || 0) : 0)) * j.len,
+        tipY: oy + Math.sin(j.angle + (j.parent === "body" ? (body.tilt || 0) : 0)) * j.len
+      };
       return map[j.id];
     }
     for (const j of allJoints()) place(j);
     return map;
+  }
+
+  function contacts(posed) {
+    const list = [];
+    for (const f of feet()) {
+      const p = posed[f.id];
+      if (!p) continue;
+      list.push({
+        j: f,
+        p: p,
+        side: sideOf(f),
+        planted: p.tipY >= FLOOR - 8
+      });
+    }
+    return list;
+  }
+
+  function settleGravity() {
+    let posed = pose();
+    const foots = contacts(posed);
+    let lowest = -Infinity;
+    foots.forEach(item => { if (item.p.tipY > lowest) lowest = item.p.tipY; });
+    if (lowest === -Infinity) lowest = body.y + 18;
+
+    body.y += (FLOOR - 3 - lowest);
+    const bellyY = FLOOR - 16;
+    if (body.y > bellyY) body.y = bellyY;
+
+    posed = pose();
+    const now = contacts(posed);
+    const planted = now.filter(item => item.p.tipY >= FLOOR - 8);
+    const front = planted.filter(item => item.side === "front");
+    const rear = planted.filter(item => item.side === "rear");
+    const comX = body.x + worldX;
+    const onBelly = body.y >= bellyY - 1;
+
+    if (!planted.length) {
+      belly = true;
+      body.tilt = approach(body.tilt, 0.85, 0.08);
+      body.y = bellyY;
+    } else if (!front.length && rear.length) {
+      belly = false;
+      body.tilt = approach(body.tilt, -0.55, 0.06);
+    } else if (front.length && !rear.length) {
+      belly = false;
+      body.tilt = approach(body.tilt, 0.7, 0.06);
+    } else {
+      let minX = planted[0].p.tipX, maxX = planted[0].p.tipX;
+      planted.forEach(item => {
+        if (item.p.tipX < minX) minX = item.p.tipX;
+        if (item.p.tipX > maxX) maxX = item.p.tipX;
+      });
+      const span = maxX - minX;
+      if (span < 22 || comX < minX - 8 || comX > maxX + 8) {
+        belly = true;
+        body.tilt = approach(body.tilt, 0.9, 0.08);
+        body.y = bellyY;
+      } else {
+        belly = onBelly && Math.abs(body.tilt) > 0.7;
+        body.tilt = approach(body.tilt, 0, 0.05);
+      }
+    }
+
+    if (Math.abs(body.tilt) > 0.82) {
+      belly = true;
+      body.y = bellyY;
+    }
+
+    posed = pose();
+    const after = contacts(posed);
+    let low2 = -Infinity;
+    after.forEach(item => { if (item.p.tipY > low2) low2 = item.p.tipY; });
+    if (low2 > -Infinity && !belly) body.y += (FLOOR - 3 - low2);
+    if (body.y > bellyY) body.y = bellyY;
+
+    const head = byId("head");
+    const hp = pose()[head.id];
+    const headDrag = belly && hp && hp.tipY >= FLOOR - 10;
+
+    return {
+      planted: after.filter(item => item.p.tipY >= FLOOR - 8).length,
+      front: after.filter(item => item.side === "front" && item.p.tipY >= FLOOR - 8).length,
+      rear: after.filter(item => item.side === "rear" && item.p.tipY >= FLOOR - 8).length,
+      belly: belly,
+      headDrag: headDrag
+    };
   }
 
   function hitPin(x, y, posed) {
@@ -189,7 +351,7 @@
   }
 
   function hitShaft(x, y, posed) {
-    let best = null, bestD = 16;
+    let best = null, bestD = 14;
     for (const j of allJoints()) {
       if (!j.present) continue;
       const p = posed[j.id];
@@ -227,10 +389,10 @@
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     ctx.fillStyle = "#2a241c";
-    ctx.fillRect(0, 252, canvas.width, 28);
+    ctx.fillRect(0, FLOOR, canvas.width, canvas.height - FLOOR);
 
     ctx.fillStyle = "#3a5034";
-    ctx.fillRect(LEAF.x - 2, LEAF.y + 8, 4, 244);
+    ctx.fillRect(LEAF.x - 2, LEAF.y + 8, 4, FLOOR - (LEAF.y + 8));
     ctx.fillStyle = "#7a9a6a";
     ctx.beginPath();
     ctx.ellipse(LEAF.x, LEAF.y, 14, 10, -0.4, 0, Math.PI * 2);
@@ -247,8 +409,12 @@
     drawSeg(posed, byId("bl_hip"), "#c4b89a", 10);
     drawSeg(posed, byId("bl_knee"), "#c4b89a", 9);
 
+    ctx.save();
+    ctx.translate(bx, by);
+    ctx.rotate(body.tilt || 0);
     ctx.fillStyle = "#b89a62";
-    roundRect(bx - 52, by - 18, 108, 36, 8);
+    roundRect(-52, -18, 108, 36, 8);
+    ctx.restore();
 
     drawSeg(posed, byId("fr_hip"), "#a89870", 10);
     drawSeg(posed, byId("fr_knee"), "#a89870", 9);
@@ -260,7 +426,7 @@
     const hp = posed[head.id];
     ctx.fillStyle = "#e2d2a4";
     ctx.beginPath();
-    ctx.ellipse(hp.tipX, hp.tipY, 18, 11, head.angle, 0, Math.PI * 2);
+    ctx.ellipse(hp.tipX, hp.tipY, 18, 11, head.angle + (body.tilt || 0), 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = "#c4b89a";
     ctx.beginPath();
@@ -302,14 +468,16 @@
   function stiffen(j) {
     j.stiff = true;
     j.live = false;
-    setNote(j.name + " locked", "Bend is stiff. Part stays on. Try a walk if you want the invoice.");
+    settleGravity();
+    setNote(j.name + " locked", "Bend is stiff. Part stays on.");
     draw();
   }
 
   function restore(j) {
     j.stiff = false;
     j.live = true;
-    setNote(j.name + " live", "Hinge restored. Drag the pin to bend it.");
+    settleGravity();
+    setNote(j.name + " live", "Pin is back. Bend if you want to pose it.");
     draw();
   }
 
@@ -327,7 +495,7 @@
       min: -1.2,
       max: 1.4,
       len: oldLen - half,
-      angle: parent.angle + 0.5,
+      angle: 0.4,
       stiff: false,
       live: true,
       present: true
@@ -336,6 +504,7 @@
       if (o.id !== id && o.parent === parent.id) o.parent = id;
     }
     extras.push(child);
+    settleGravity();
     setNote("extra hinge", "Nature did not order this. Try will fold it in a stupid place.");
     draw();
   }
@@ -349,77 +518,77 @@
     const pin = hitPin(pt.x, pt.y, posed);
 
     if (mode === "pull") {
-      if (pin) {
-        pendingPull = { id: pin.id, x: pt.x, y: pt.y, moved: false };
-        if (pin.live && !pin.stiff) {
-          drag = { id: pin.id };
-        }
-      }
+      if (pin) pendingTap = { id: pin.id, x: pt.x, y: pt.y, moved: false };
       return;
     }
 
     if (mode === "add") {
-      if (pin && (pin.stiff || !pin.live)) {
-        restore(pin);
+      if (pin) {
+        setNote("that's a pin", "Add taps a bone, not a socket. Replace puts a pulled pin back.");
         return;
       }
       const shaft = hitShaft(pt.x, pt.y, posed);
-      if (shaft) {
-        addExtraOn(shaft);
-        return;
-      }
-      setNote("missed", "Tap a stiff pin to restore, or a bone shaft to add a hinge.");
+      if (shaft) addExtraOn(shaft);
+      else setNote("missed", "Tap a bone shaft to add a hinge.");
       return;
     }
 
-    if (pin && pin.live && !pin.stiff) {
-      drag = { id: pin.id };
+    if (mode === "replace") {
+      if (pin && (pin.stiff || !pin.live)) restore(pin);
+      else if (pin) setNote("already in", "That socket still has its pin.");
+      else setNote("missed", "Replace taps a dead socket only.");
+      return;
+    }
+
+    if (mode === "bend") {
+      if (pin && isLive(pin)) drag = { id: pin.id };
+      else if (pin) setNote("stiff", "Dead socket. Replace it first if you want that bend back.");
+      return;
     }
   }
 
   function onMove(ev) {
     if (trying) return;
     const pt = local(ev);
-    if (pendingPull) {
-      const dx = pt.x - pendingPull.x, dy = pt.y - pendingPull.y;
-      if (dx * dx + dy * dy > 25) pendingPull.moved = true;
+    if (pendingTap) {
+      const dx = pt.x - pendingTap.x, dy = pt.y - pendingTap.y;
+      if (dx * dx + dy * dy > 25) pendingTap.moved = true;
     }
     if (!drag) return;
     ev.preventDefault();
     const j = byId(drag.id);
-    if (!j || j.stiff || !j.live) return;
+    if (!isLive(j)) return;
     const posed = pose();
     const p = posed[j.id];
-    j.angle = clamp(Math.atan2(pt.y - p.pinY, pt.x - p.pinX), j.min, j.max);
+    j.angle = clamp(Math.atan2(pt.y - p.pinY, pt.x - p.pinX) - (j.parent === "body" ? (body.tilt || 0) : 0), j.min, j.max);
+    settleGravity();
     draw();
   }
 
-  function onUp(ev) {
-    if (pendingPull && !pendingPull.moved) {
-      const j = byId(pendingPull.id);
+  function onUp() {
+    if (pendingTap && !pendingTap.moved && mode === "pull") {
+      const j = byId(pendingTap.id);
       if (j) stiffen(j);
     }
-    pendingPull = null;
+    pendingTap = null;
     drag = null;
   }
 
-  function hardwareFacts(posed) {
+  function hardwareFacts(g) {
     const facts = [];
     const stiffHips = joints.filter(j => j.id.endsWith("_hip") && j.stiff);
     const stiffKnees = joints.filter(j => j.id.endsWith("_knee") && j.stiff);
     const neck = byId("neck");
     const head = byId("head");
-
-    if (stiffHips.length) {
-      facts.push("Stiff " + stiffHips.map(j => j.name.replace(" hip", "")).join("/") + " hip — hobble.");
-    }
-    if (stiffKnees.length >= 2) facts.push("Knees locked — drag.");
+    if (g.belly) facts.push("Could not stand — belly on the dirt.");
+    else if (g.front && !g.rear) facts.push("Only the front planted — it tipped.");
+    else if (g.rear && !g.front) facts.push("Only the rear planted — it tipped.");
+    if (stiffHips.length) facts.push("Stiff " + stiffHips.map(j => j.name.replace(" hip", "")).join("/") + " hip — thigh locked, knee still its own pin.");
+    if (stiffKnees.length >= 2) facts.push("Knees locked — poles.");
     else if (stiffKnees.length === 1) facts.push(stiffKnees[0].name + " stiff — limp.");
     if (neck.stiff) facts.push("Neck locked — mailbox poke.");
     if (head.stiff && !neck.stiff) facts.push("Skull latch stiff — aim stays wrong.");
     if (extras.length) facts.push("Extra hinge — folded in a stupid place.");
-    const hp = posed[head.id];
-    if (hp.tipY > body.y + 20) facts.push("Head aimed at dirt — graze cannot reach.");
     return facts;
   }
 
@@ -427,109 +596,137 @@
     const hp = posed[byId("head").id];
     const dx = hp.tipX - LEAF.x;
     const dy = hp.tipY - LEAF.y;
-    return dx * dx + dy * dy < 36 * 36;
+    return dx * dx + dy * dy < 28 * 28;
   }
 
-  function finishTry(reached, facts) {
+  function finishTry(g) {
+    const facts = hardwareFacts(g);
     if (reached) {
       setNote("leaf got bitten", facts.join(" ") || "It worked. That does not mean the hinges are right.");
-    } else if (!facts.length) {
-      setNote("leaf still up there", "Took the steps. Missed the snack.");
+    } else if (g.belly && !g.planted) {
+      setNote("stuck on the dirt", facts.join(" ") || "Nothing planted. No commute.");
     } else {
-      setNote("try failed", facts.join(" "));
+      setNote("leaf still up there", facts.join(" ") || "Took what the hardware allowed. Missed the snack.");
+    }
+  }
+
+  function huntFloor() {
+    const posed = pose();
+    for (const f of feet()) {
+      if (!isLive(f)) continue;
+      const p = posed[f.id];
+      if (p.tipY < FLOOR - 6) {
+        f.angle = clamp(f.angle + 0.08, f.min, f.max);
+      }
+    }
+    extras.forEach(e => {
+      if (isLive(e)) e.angle = clamp(e.angle + Math.sin(gaitT * 3) * 0.05, e.min, e.max);
+    });
+  }
+
+  function stepGait() {
+    gaitT += 0.12;
+    const gait = gaitT;
+    ["fl_hip", "fr_hip", "bl_hip", "br_hip"].forEach(function (id) {
+      const j = byId(id);
+      if (!isLive(j)) return;
+      const phase = id.charAt(0) === "f" ? 0 : Math.PI;
+      const side = id.indexOf("l") >= 0 ? 1 : -1;
+      j.angle = clamp(j.rest + Math.sin(gait + phase) * 0.28 * side, j.min, j.max);
+    });
+    ["fl_knee", "fr_knee", "bl_knee", "br_knee"].forEach(function (id) {
+      const j = byId(id);
+      if (!isLive(j)) return;
+      j.angle = clamp(j.rest + Math.sin(gait + 0.5) * 0.35, j.min, j.max);
+    });
+    extras.forEach(function (e) {
+      if (isLive(e)) e.angle = clamp(e.rest + Math.sin(gait * 1.3) * 0.9, e.min, e.max);
+    });
+  }
+
+  function reachLeaf() {
+    const neck = byId("neck");
+    const head = byId("head");
+    const posed = pose();
+    if (isLive(neck)) {
+      const pin = posed[neck.id];
+      const want = Math.atan2(LEAF.y - pin.pinY, LEAF.x - pin.pinX) - (body.tilt || 0);
+      neck.angle = clamp(approach(neck.angle, want, 0.035), neck.min, neck.max);
+    }
+    if (isLive(head)) {
+      const pin = posed[head.id];
+      const want = Math.atan2(LEAF.y - pin.pinY, LEAF.x - pin.pinX);
+      head.angle = clamp(approach(head.angle, want, 0.04), head.min, head.max);
     }
   }
 
   function runTry() {
     if (trying) return;
     trying = true;
+    reached = false;
+    gaitT = 0;
+    stall = 0;
+    lastPlantX = worldX;
     btnTry.disabled = true;
-    setNote("trying", "Walk, then graze. Hardware is law.");
+    settleGravity();
+    phase = belly ? "crawl" : "walk";
+    setNote("trying", belly ? "Cannot stand. Hunt the floor, then reach." : "Walk with what can plant. Then reach.");
 
-    const start = {};
-    for (const j of allJoints()) start[j.id] = j.angle;
-
-    const t0 = performance.now();
-    const DUR = 2800;
-    let reached = false;
-    const early = hardwareFacts(pose());
-
-    function frame(now) {
-      const t = Math.min(1, (now - t0) / DUR);
-      const walk = Math.min(1, t / 0.55);
-      const graze = Math.max(0, (t - 0.55) / 0.45);
-
-      const stiffHipN = joints.filter(j => j.id.endsWith("_hip") && j.stiff).length;
-      const stiffKneeN = joints.filter(j => j.id.endsWith("_knee") && j.stiff).length;
-      let speed = 70 - stiffHipN * 14 - stiffKneeN * 8 - extras.length * 10;
-      if (speed < 8) speed = 8;
-
-      let tip = 0;
-      if (stiffHipN >= 2) tip = Math.sin(walk * Math.PI * 2) * 10;
-      if (stiffHipN >= 3) tip += 6;
-      worldX = walk * speed;
-      body.y = 130 + tip + (stiffKneeN >= 3 ? 8 : 0);
-
-      const gait = walk * Math.PI * 4;
-      ["fl_hip", "fr_hip", "bl_hip", "br_hip"].forEach(function (id) {
-        const j = byId(id);
-        if (j.live && !j.stiff) {
-          const phase = id.charAt(0) === "f" ? 0 : Math.PI;
-          const side = id.indexOf("l") >= 0 ? 1 : -1;
-          j.angle = clamp(start[id] + Math.sin(gait + phase) * 0.28 * side, j.min, j.max);
+    function frame() {
+      let g;
+      if (phase === "walk") {
+        stepGait();
+        g = settleGravity();
+        if (g.belly) {
+          phase = "crawl";
+          stall = 0;
+        } else if (g.planted > 0) {
+          worldX += 1.15 + g.planted * 0.15;
+          lastPlantX = worldX;
+          stall = 0;
+        } else {
+          stall += 1;
         }
-      });
-      ["fl_knee", "fr_knee", "bl_knee", "br_knee"].forEach(function (id) {
-        const j = byId(id);
-        if (j.live && !j.stiff) {
-          j.angle = clamp(start[id] + Math.sin(gait + 0.5) * 0.35, j.min, j.max);
+        if (body.x + worldX > 230 || stall > 50) phase = "eat";
+      } else if (phase === "crawl") {
+        huntFloor();
+        g = settleGravity();
+        const movers = g.planted + (g.headDrag ? 1 : 0);
+        if (movers > 0) {
+          worldX += 0.55;
+          lastPlantX = worldX;
+          stall = 0;
+        } else {
+          stall += 1;
         }
-      });
-      extras.forEach(function (e) {
-        if (e.live && !e.stiff) {
-          e.angle = clamp(start[e.id] + Math.sin(gait * 1.3) * 0.9, e.min, e.max);
-        }
-      });
-
-      const neck = byId("neck");
-      const head = byId("head");
-      if (graze > 0) {
-        if (neck.live && !neck.stiff) {
-          const target = -2.05;
-          neck.angle = clamp(start.neck + (target - start.neck) * graze, neck.min, neck.max);
-        } else if (neck.stiff) {
-          neck.angle = start.neck + graze * 0.15;
-        }
-        if (head.live && !head.stiff) {
-          const posed = pose();
-          const pin = posed.head;
-          const want = Math.atan2(LEAF.y - pin.pinY, LEAF.x - pin.pinX);
-          head.angle = clamp(start.head + (want - start.head) * graze, head.min, head.max);
+        if (stall > 70 || body.x + worldX > 250) phase = "eat";
+      } else {
+        reachLeaf();
+        g = settleGravity();
+        if (headNearLeaf(pose())) {
+          reached = true;
+          phase = "done";
+        } else {
+          stall += 1;
+          if (stall > 90) phase = "done";
         }
       }
 
-      const posed = pose();
-      if (headNearLeaf(posed)) reached = true;
+      if (worldX === lastPlantX && (phase === "walk" || phase === "crawl")) {
+        /* stall already counted when nothing planted */
+      }
+
       draw();
 
-      if (t < 1) {
-        animId = requestAnimationFrame(frame);
-      } else {
-        for (const j of allJoints()) {
-          if (j.live && !j.stiff) j.angle = start[j.id];
-        }
-        body.y = 130;
+      if (phase === "done") {
         trying = false;
         btnTry.disabled = false;
         animId = null;
-        const late = hardwareFacts(pose());
-        const all = [];
-        early.concat(late).forEach(function (f) {
-          if (all.indexOf(f) < 0) all.push(f);
-        });
-        finishTry(reached, all);
+        finishTry(g || settleGravity());
         draw();
+        return;
       }
+      animId = requestAnimationFrame(frame);
     }
     animId = requestAnimationFrame(frame);
   }
@@ -541,6 +738,8 @@
 
   btnPull.onclick = function () { if (!trying) setMode("pull"); };
   btnAdd.onclick = function () { if (!trying) setMode("add"); };
+  btnReplace.onclick = function () { if (!trying) setMode("replace"); };
+  btnBend.onclick = function () { if (!trying) setMode("bend"); };
   btnTry.onclick = function () { runTry(); };
   btnReset.onclick = function () { resetAll(); };
 

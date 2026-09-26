@@ -283,63 +283,50 @@
   }
 
   function settleGravity() {
-    const bellyY = FLOOR - 16;
-    let posed = pose();
-    const foots = contacts(posed);
+    const bellyY = FLOOR - 18;
+    const posed0 = pose();
+    const foots = contacts(posed0);
     let lowest = -Infinity;
     foots.forEach(item => { if (item.p.tipY > lowest) lowest = item.p.tipY; });
     if (lowest === -Infinity) lowest = body.y + 18;
-    body.y += (FLOOR - 3 - lowest);
-    if (body.y > bellyY) body.y = bellyY;
+    const drop = FLOOR - 3 - lowest;
 
-    posed = pose();
-    const planted = contacts(posed).filter(item => item.p.tipY >= FLOOR - 8);
-    const front = planted.filter(item => item.side === "front");
-    const rear = planted.filter(item => item.side === "rear");
-    const com = massCenter(posed);
-    const bothEnds = front.length > 0 && rear.length > 0;
-
+    const wouldPlant = foots.filter(item => item.p.tipY + drop >= FLOOR - 8);
+    const front = wouldPlant.filter(item => item.side === "front");
+    const rear = wouldPlant.filter(item => item.side === "rear");
+    const com = massCenter(posed0);
     let minX = Infinity, maxX = -Infinity;
-    planted.forEach(item => {
+    wouldPlant.forEach(item => {
       if (item.p.tipX < minX) minX = item.p.tipX;
       if (item.p.tipX > maxX) maxX = item.p.tipX;
     });
-    const overSupport = bothEnds && planted.length >= 2 && com.x >= minX - 4 && com.x <= maxX + 4;
+    const bothEnds = front.length > 0 && rear.length > 0;
+    const overSupport = bothEnds && com.x >= minX + 6 && com.x <= maxX - 6;
 
-    if (!planted.length) {
-      belly = true;
-      body.tilt = approach(body.tilt, 0.9, 0.1);
-      body.y = bellyY;
-    } else if (!overSupport) {
-      belly = true;
-      const tipDir = com.x > (isFinite(maxX) ? maxX : com.x) ? 0.95 : -0.7;
-      body.tilt = approach(body.tilt, tipDir, 0.1);
-      body.y = bellyY;
-    } else {
+    if (overSupport) {
       belly = false;
-      body.tilt = approach(body.tilt, 0, 0.05);
+      body.tilt = approach(body.tilt, 0, 0.08);
+      body.y += drop;
+      if (body.y > bellyY) body.y = bellyY;
+    } else {
+      belly = true;
+      body.tilt = approach(body.tilt, 0, 0.22);
+      body.y = approach(body.y, bellyY, 10);
     }
 
-    posed = pose();
+    const posed = pose();
     const after = contacts(posed);
-    if (!belly) {
-      let low2 = -Infinity;
-      after.forEach(item => { if (item.p.tipY > low2) low2 = item.p.tipY; });
-      if (low2 > -Infinity) body.y += (FLOOR - 3 - low2);
-    }
-    if (body.y > bellyY) body.y = bellyY;
-
-    const head = byId("head");
-    const hp = pose()[head.id];
-    const headDrag = belly && hp && hp.tipY >= FLOOR - 10;
     const plantedNow = after.filter(item => item.p.tipY >= FLOOR - 8);
+    const head = byId("head");
+    const hp = posed[head.id];
+    const headDrag = belly && hp && hp.tipY >= FLOOR - 10;
 
     return {
       planted: plantedNow.length,
       front: plantedNow.filter(item => item.side === "front").length,
       rear: plantedNow.filter(item => item.side === "rear").length,
       belly: belly,
-      stand: !belly && plantedNow.some(i => i.side === "front") && plantedNow.some(i => i.side === "rear"),
+      stand: !belly && overSupport,
       headDrag: headDrag
     };
   }
@@ -693,6 +680,7 @@
         if (g.belly || !g.stand) {
           phase = "crawl";
           stall = 0;
+          setNote("trying", "Cannot stand. Barrel on the dirt. Hunt the floor, then reach.");
         } else if (g.stand) {
           worldX += 1.15 + Math.min(g.planted, 4) * 0.1;
           lastPlantX = worldX;

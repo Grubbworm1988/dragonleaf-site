@@ -332,7 +332,7 @@
   }
 
   function hitPin(x, y, posed) {
-    let best = null, bestD = 16 * 16;
+    let best = null, bestD = 24 * 24;
     for (const j of allJoints()) {
       if (!j.present) continue;
       const p = posed[j.id];
@@ -351,7 +351,7 @@
   }
 
   function hitShaft(x, y, posed) {
-    let best = null, bestD = 14;
+    let best = null, bestD = 22;
     for (const j of allJoints()) {
       if (!j.present) continue;
       const p = posed[j.id];
@@ -359,6 +359,12 @@
       if (d < bestD) { bestD = d; best = j; }
     }
     return best;
+  }
+
+  function hitLimb(x, y, posed) {
+    const pin = hitPin(x, y, posed);
+    if (pin) return pin;
+    return hitShaft(x, y, posed);
   }
 
   function roundRect(x, y, w, h, r) {
@@ -541,8 +547,15 @@
     }
 
     if (mode === "bend") {
-      if (pin && isLive(pin)) drag = { id: pin.id };
-      else if (pin) setNote("stiff", "Dead socket. Replace it first if you want that bend back.");
+      const limb = hitLimb(pt.x, pt.y, posed);
+      if (limb && isLive(limb)) {
+        drag = { id: limb.id };
+        setNote(limb.name, "Drag the bone. It turns on its pin.");
+      } else if (limb) {
+        setNote("stiff", "Dead socket. Replace it first if you want that bend back.");
+      } else {
+        setNote("missed", "Grab the leg, neck, or head — anywhere on the bone.");
+      }
       return;
     }
   }
@@ -742,7 +755,11 @@
   btnPull.onclick = function () { if (!trying) setMode("pull"); };
   btnAdd.onclick = function () { if (!trying) setMode("add"); };
   btnReplace.onclick = function () { if (!trying) setMode("replace"); };
-  btnBend.onclick = function () { if (!trying) setMode("bend"); };
+  btnBend.onclick = function () {
+    if (trying) return;
+    setMode("bend");
+    setNote("bend", "Grab anywhere on a live bone and drag. Pin or shaft both work.");
+  };
   btnTry.onclick = function () { runTry(); };
   btnReset.onclick = function () { resetAll(); };
 

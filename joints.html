@@ -71,7 +71,8 @@
   <div class="animals" id="animals"></div>
   <div class="bar">
     <button id="pull" class="on">pull pin</button>
-    <button id="add">add joint</button>
+    <button id="replace">replace joint</button>
+    <button id="bend">bend</button>
     <button id="try">try</button>
     <button id="reset">reset giraffe</button>
   </div>
@@ -81,17 +82,26 @@
   </div>
   <footer>Dragonleaf experiment. Wrong Joints. Not a catalog.</footer>
   <script>
+/* Wrong Joints contract — live file is source of truth.
+   Gravity holds the body down.
+   Plant what the animal has (feet / hands / wings). Head only if those cannot reach the ground.
+   Walk = what CAN plant. Stiff joints that unbalance it = fall.
+   Replace joint = restore a pulled pin only. No free extras.
+   Bend = pose a live joint. Separate from Try.
+*/
 (function () {
   const canvas = document.getElementById("c");
   const ctx = canvas.getContext("2d");
   const noteEl = document.getElementById("note");
   const animalsEl = document.getElementById("animals");
   const btnPull = document.getElementById("pull");
-  const btnAdd = document.getElementById("add");
+  const btnReplace = document.getElementById("replace");
+  const btnBend = document.getElementById("bend");
   const btnTry = document.getElementById("try");
   const btnReset = document.getElementById("reset");
 
   const LEAF = { x: 310, y: 28 };
+  const FLOOR = 252;
 
   const ANIMALS = {
     giraffe: {
@@ -99,8 +109,9 @@
       label: "giraffe",
       bodyColor: "#b89a62",
       body: { w: 108, h: 36, y: 130 },
-      intro: "Stock giraffe. Pull a pin to lock a bend. Try walks, then grazes the high leaf.",
-      tryVerb: "Walk, then graze. Hardware is law.",
+      plants: ["fl_knee", "fr_knee", "bl_knee", "br_knee"],
+      intro: "Stock giraffe. Gravity holds it down. Plant the feet. Pull a pin and that bend goes stiff.",
+      tryVerb: "Walk with what can plant. Then graze.",
       defs: [
         { id: "neck", name: "neck", site: "neck", parent: "body", rest: -1.35, min: -2.4, max: -0.2, len: 78, ax: 48, ay: -8 },
         { id: "head", name: "skull", site: "skull", parent: "neck", rest: -0.15, min: -1.1, max: 0.9, len: 34 },
@@ -119,8 +130,9 @@
       label: "z-neck heron",
       bodyColor: "#8a948c",
       body: { w: 72, h: 28, y: 150 },
-      intro: "Z-neck heron. Cervical stack is already two hinges. Rest is a coiled S. Try snaps at the leaf.",
-      tryVerb: "Snap toward the leaf. Hardware is law.",
+      plants: ["fl_knee", "fr_knee", "bl_knee", "br_knee"],
+      intro: "Z-neck heron. Feet plant first. Head only if the feet cannot reach the ground.",
+      tryVerb: "Walk on what can plant. Then snap.",
       defs: [
         { id: "neck", name: "neck base", site: "neck", parent: "body", rest: -0.55, min: -2.2, max: 0.4, len: 36, ax: 34, ay: -6 },
         { id: "neck_mid", name: "mid neck", site: "neck", parent: "neck", rest: -2.35, min: -3.0, max: -0.4, len: 40 },
@@ -140,8 +152,9 @@
       label: "shelf-knee goat",
       bodyColor: "#a89068",
       body: { w: 86, h: 40, y: 128 },
-      intro: "Shelf-knee goat. Knees rest chair-folded the wrong way. Try walks the stairs; the high leaf needs unlocked knees.",
-      tryVerb: "Walk the shelves, then reach. Hardware is law.",
+      plants: ["fl_knee", "fr_knee", "bl_knee", "br_knee"],
+      intro: "Shelf-knee goat. Knees rest chair-folded. Gravity still wants the feet on the ground.",
+      tryVerb: "Walk with what can plant. Shelves that stay folded do not climb.",
       defs: [
         { id: "neck", name: "neck", site: "neck", parent: "body", rest: -0.85, min: -2.0, max: 0.2, len: 34, ax: 40, ay: -10 },
         { id: "head", name: "skull", site: "skull", parent: "neck", rest: -0.2, min: -1.0, max: 0.9, len: 26 },
@@ -167,6 +180,7 @@
   let extras = [];
   let body = { x: 130, y: 130 };
   let pendingPull = null;
+  let fallen = false;
 
   function animal() { return ANIMALS[animalId]; }
 
@@ -183,7 +197,8 @@
   function setMode(m) {
     mode = m;
     btnPull.classList.toggle("on", m === "pull");
-    btnAdd.classList.toggle("on", m === "add");
+    btnReplace.classList.toggle("on", m === "replace");
+    btnBend.classList.toggle("on", m === "bend");
     btnTry.disabled = trying;
   }
 
@@ -209,10 +224,12 @@
     worldX = 0;
     drag = null;
     pendingPull = null;
+    fallen = false;
     trying = false;
     if (animId) { cancelAnimationFrame(animId); animId = null; }
     setMode("pull");
     syncAnimalButtons();
+    settleGravity(false);
     setNote(a.label, a.intro);
     draw();
   }
@@ -244,6 +261,73 @@
     }
     allJoints().forEach(place);
     return map;
+  }
+
+  function plantParts() {
+    return (animal().plants || []).map(byId).filter(function (j) { return j && j.present; });
+  }
+
+  function chainCanStep(plantId) {
+    var foot = byId(plantId);
+    if (!foot || !foot.present) return false;
+    if (foot.stiff || !foot.live) return false;
+    var hip = byId(foot.parent);
+    if (hip && (hip.stiff || !hip.live)) return false;
+    return true;
+  }
+
+  function usableSteps() {
+    return plantParts().filter(function (j) { return chainCanStep(j.id); });
+  }
+
+  function settleGravity(allowFall) {
+    var posed = pose();
+    var plants = plantParts();
+    var head = byId("head");
+    var usedHead = false;
+    var targets = plants.map(function (j) { return posed[j.id]; }).filter(Boolean);
+
+    if (!targets.length) {
+      usedHead = true;
+      if (head && posed[head.id]) targets = [posed[head.id]];
+    }
+
+    if (targets.length) {
+      var lowest = targets[0].tipY;
+      targets.forEach(function (p) { if (p.tipY > lowest) lowest = p.tipY; });
+      body.y += (FLOOR - 4 - lowest);
+      var maxBody = FLOOR - animal().body.h * 0.35;
+      if (body.y > maxBody) body.y = maxBody;
+    }
+
+    posed = pose();
+    var planted = [];
+    plants.forEach(function (j) {
+      var p = posed[j.id];
+      if (p && p.tipY >= FLOOR - 10) planted.push({ j: j, p: p });
+    });
+    if (!planted.length && head && posed[head.id] && posed[head.id].tipY >= FLOOR - 10) {
+      usedHead = true;
+      planted.push({ j: head, p: posed[head.id] });
+    }
+
+    var comX = body.x + worldX;
+    var fell = planted.length < 2;
+    if (!fell) {
+      var minX = planted[0].p.tipX, maxX = planted[0].p.tipX;
+      planted.forEach(function (item) {
+        if (item.p.tipX < minX) minX = item.p.tipX;
+        if (item.p.tipX > maxX) maxX = item.p.tipX;
+      });
+      if (comX < minX - 10 || comX > maxX + 10) fell = true;
+    }
+    if (usedHead && planted.length <= 1) fell = true;
+
+    if (fell && allowFall) {
+      fallen = true;
+      body.y = Math.min(body.y + 28, FLOOR - animal().body.h * 0.25);
+    }
+    return { planted: planted.length, fell: fell, usedHead: usedHead };
   }
 
   function hitPin(x, y, posed) {
@@ -426,41 +510,21 @@
   function stiffen(j) {
     j.stiff = true;
     j.live = false;
-    setNote(j.name + " locked", "Bend is stiff. Part stays on.");
+    var g = settleGravity(true);
+    setNote(j.name + " locked", g.fell ? "Bend is stiff. It cannot plant right." : "Bend is stiff. Part stays on.");
     draw();
   }
 
   function restore(j) {
+    if (!j.stiff && j.live) {
+      setNote("already live", "Replace only puts back a pin you pulled.");
+      return;
+    }
     j.stiff = false;
     j.live = true;
-    setNote(j.name + " live", "Hinge restored. Drag the pin to bend it.");
-    draw();
-  }
-
-  function addExtraOn(parent) {
-    var id = "extra_" + extras.length + "_" + Date.now().toString(36);
-    var half = parent.len * 0.5;
-    var oldLen = parent.len;
-    parent.len = half;
-    var child = {
-      id: id,
-      name: "extra hinge on " + parent.name,
-      site: "extra",
-      parent: parent.id,
-      rest: 0.4,
-      min: -1.2,
-      max: 1.4,
-      len: oldLen - half,
-      angle: parent.angle + 0.5,
-      stiff: false,
-      live: true,
-      present: true
-    };
-    allJoints().forEach(function (o) {
-      if (o.id !== id && o.parent === parent.id) o.parent = id;
-    });
-    extras.push(child);
-    setNote("extra hinge", "Nature did not order this. Try will fold it wrong.");
+    fallen = false;
+    settleGravity(false);
+    setNote(j.name + " live", "Hinge restored. Bend to pose it.");
     draw();
   }
 
@@ -473,37 +537,28 @@
     var pin = hitPin(pt.x, pt.y, posed);
 
     if (mode === "pull") {
-      if (pin) {
-        pendingPull = { id: pin.id, x: pt.x, y: pt.y, moved: false };
-        if (pin.live && !pin.stiff) drag = { id: pin.id };
-      }
+      if (pin && !pin.stiff) stiffen(pin);
+      else if (pin && pin.stiff) setNote(pin.name + " already stiff", "Replace joint puts the pin back.");
       return;
     }
 
-    if (mode === "add") {
-      if (pin && (pin.stiff || !pin.live)) {
-        restore(pin);
-        return;
-      }
-      var shaft = hitShaft(pt.x, pt.y, posed);
-      if (shaft) {
-        addExtraOn(shaft);
-        return;
-      }
-      setNote("missed", "Tap a stiff pin to restore, or a bone shaft to add a hinge.");
+    if (mode === "replace") {
+      if (pin && (pin.stiff || !pin.live)) restore(pin);
+      else if (pin) setNote("no free extras", "Replace only restores a pulled pin.");
+      else setNote("missed", "Tap a stiff pin to put it back.");
       return;
     }
 
-    if (pin && pin.live && !pin.stiff) drag = { id: pin.id };
+    if (mode === "bend") {
+      if (pin && pin.live && !pin.stiff) drag = { id: pin.id };
+      else if (pin) setNote(pin.name + " locked", "Stiff hinge will not pose. Replace it first.");
+      return;
+    }
   }
 
   function onMove(ev) {
-    if (trying) return;
+    if (trying || mode !== "bend") return;
     var pt = local(ev);
-    if (pendingPull) {
-      var dx = pt.x - pendingPull.x, dy = pt.y - pendingPull.y;
-      if (dx * dx + dy * dy > 25) pendingPull.moved = true;
-    }
     if (!drag) return;
     ev.preventDefault();
     var j = byId(drag.id);
@@ -511,16 +566,15 @@
     var posed = pose();
     var p = posed[j.id];
     j.angle = clamp(Math.atan2(pt.y - p.pinY, pt.x - p.pinX), j.min, j.max);
+    fallen = false;
     draw();
   }
 
   function onUp() {
-    if (pendingPull && !pendingPull.moved) {
-      var j = byId(pendingPull.id);
-      if (j) stiffen(j);
-    }
+    if (drag && mode === "bend") settleGravity(true);
     pendingPull = null;
     drag = null;
+    draw();
   }
 
   function hardwareFacts(posed) {
@@ -553,10 +607,10 @@
     }
 
     if (head && head.stiff && !(neck && neck.stiff)) facts.push("Skull latch stiff — aim stays wrong.");
-    if (extras.length) facts.push("Extra hinge — folded in a stupid place.");
+    if (fallen) facts.push("Stiff joints unbalance it — it fell.");
     if (head) {
       var hp = posed[head.id];
-      if (hp.tipY > body.y + 24) facts.push("Head aimed at dirt — cannot take the leaf.");
+      if (hp && hp.tipY > body.y + 24) facts.push("Head aimed at dirt — cannot take the leaf.");
     }
     return facts;
   }
@@ -578,7 +632,9 @@
   }
 
   function finishTry(reached, facts) {
-    if (reached) {
+    if (fallen) {
+      setNote("fell", facts.join(" ") || "Could not plant enough. Gravity won.");
+    } else if (reached) {
       setNote("leaf got bitten", facts.join(" ") || "It worked. That does not mean the hinges are right.");
     } else if (!facts.length) {
       setNote("leaf still up there", "Took the steps. Missed the snack.");
@@ -612,18 +668,14 @@
         graze = Math.max(0, (t - 0.55) / 0.45);
       }
 
-      var stiffHipN = joints.filter(function (j) { return j.id.indexOf("_hip") >= 0 && j.stiff; }).length;
-      var stiffKneeN = joints.filter(function (j) { return j.id.indexOf("_knee") >= 0 && j.stiff; }).length;
-      var speed = (animalId === "goat" ? 48 : animalId === "heron" ? 55 : 70) - stiffHipN * 14 - stiffKneeN * 8 - extras.length * 10;
-      if (animalId === "goat" && !kneesUnlocked()) speed = Math.min(speed, 18);
-      if (speed < 6) speed = 6;
+      var steps = usableSteps().length;
+      var plantN = plantParts().length;
+      var speed = (animalId === "goat" ? 48 : animalId === "heron" ? 55 : 70) * (steps / Math.max(1, plantN));
+      if (animalId === "goat" && !kneesUnlocked()) speed = Math.min(speed, 16);
+      if (steps === 0) speed = 0;
+      if (speed > 0 && speed < 8) speed = 8;
 
-      var tip = 0;
-      if (stiffHipN >= 2) tip = Math.sin(walk * Math.PI * 2) * 10;
-      if (stiffHipN >= 3) tip += 6;
-      if (animalId === "goat" && stiffKneeN) tip += Math.abs(Math.sin(walk * Math.PI * 6)) * 4;
       worldX = walk * speed;
-      body.y = animal().body.y + tip + (stiffKneeN >= 3 ? 8 : 0);
 
       var gait = walk * Math.PI * (animalId === "goat" ? 6 : 4);
       ["fl_hip", "fr_hip", "bl_hip", "br_hip"].forEach(function (id) {
@@ -638,7 +690,6 @@
         var j = byId(id);
         if (!j || !j.live || j.stiff) return;
         if (animalId === "goat") {
-          // try to unfold shelves toward a usable walk
           var target = 0.55;
           j.angle = clamp(start[id] + (target - start[id]) * walk + Math.sin(gait + 0.5) * 0.15, j.min, j.max);
         } else {
@@ -650,6 +701,12 @@
           e.angle = clamp(start[e.id] + Math.sin(gait * 1.3) * 0.9, e.min, e.max);
         }
       });
+
+      var gravity = settleGravity(true);
+      if (gravity.fell) {
+        graze = 0;
+        if (steps === 0) t = 1;
+      }
 
       var neck = byId("neck");
       var mid = byId("neck_mid");
@@ -688,23 +745,23 @@
       }
 
       var posed = pose();
-      var canReach = true;
+      var canReach = !fallen;
       if (animalId === "goat" && !kneesUnlocked()) canReach = false;
       if (canReach && headNearLeaf(posed)) reached = true;
       draw();
 
-      if (t < 1) {
-        animId = requestAnimationFrame(frame);
-      } else {
-        allJoints().forEach(function (j) {
-          if (j.live && !j.stiff) j.angle = start[j.id];
-        });
-        body.y = animal().body.y;
+      if (fallen || t >= 1) {
+        if (!fallen) {
+          allJoints().forEach(function (j) {
+            if (j.live && !j.stiff) j.angle = start[j.id];
+          });
+          settleGravity(false);
+        }
         trying = false;
         btnTry.disabled = false;
         animId = null;
         var late = hardwareFacts(pose());
-        if (animalId === "goat" && !kneesUnlocked() && !reached) {
+        if (animalId === "goat" && !kneesUnlocked() && !reached && !fallen) {
           late.push("Shelves never opened — leaf stays a rumor.");
         }
         var all = [];
@@ -713,6 +770,8 @@
         });
         finishTry(reached, all);
         draw();
+      } else {
+        animId = requestAnimationFrame(frame);
       }
     }
     animId = requestAnimationFrame(frame);
@@ -732,7 +791,8 @@
   canvas.addEventListener("pointercancel", onUp);
 
   btnPull.onclick = function () { if (!trying) setMode("pull"); };
-  btnAdd.onclick = function () { if (!trying) setMode("add"); };
+  btnReplace.onclick = function () { if (!trying) setMode("replace"); };
+  btnBend.onclick = function () { if (!trying) setMode("bend"); };
   btnTry.onclick = function () { runTry(); };
   btnReset.onclick = function () { if (!trying) resetAll(); };
 

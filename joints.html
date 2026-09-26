@@ -87,6 +87,7 @@
    Replace restores a dead socket only.
    Bend poses a live pin.
    Gravity drops the body. Feet plant. Head is not a fifth foot while standing.
+   Barrel is the heavy mass. Head is light. Front feet alone cannot hold a handstand.
    Try = walk or crawl if it cannot stand, then a slow reach for the leaf.
    No timer-lerp commute. No animal rewrite in this file.
 */
@@ -260,73 +261,85 @@
     return list;
   }
 
+  function massCenter(posed) {
+    const bx = body.x + worldX;
+    const by = body.y;
+    let mx = bx * 10;
+    let my = by * 10;
+    let m = 10;
+    const neck = posed.neck;
+    if (neck) {
+      mx += ((neck.pinX + neck.tipX) * 0.5) * 2;
+      my += ((neck.pinY + neck.tipY) * 0.5) * 2;
+      m += 2;
+    }
+    const head = posed.head;
+    if (head) {
+      mx += head.tipX * 1.2;
+      my += head.tipY * 1.2;
+      m += 1.2;
+    }
+    return { x: mx / m, y: my / m };
+  }
+
   function settleGravity() {
+    const bellyY = FLOOR - 16;
     let posed = pose();
     const foots = contacts(posed);
     let lowest = -Infinity;
     foots.forEach(item => { if (item.p.tipY > lowest) lowest = item.p.tipY; });
     if (lowest === -Infinity) lowest = body.y + 18;
-
     body.y += (FLOOR - 3 - lowest);
-    const bellyY = FLOOR - 16;
     if (body.y > bellyY) body.y = bellyY;
 
     posed = pose();
-    const now = contacts(posed);
-    const planted = now.filter(item => item.p.tipY >= FLOOR - 8);
+    const planted = contacts(posed).filter(item => item.p.tipY >= FLOOR - 8);
     const front = planted.filter(item => item.side === "front");
     const rear = planted.filter(item => item.side === "rear");
-    const comX = body.x + worldX;
-    const onBelly = body.y >= bellyY - 1;
+    const com = massCenter(posed);
+    const bothEnds = front.length > 0 && rear.length > 0;
+
+    let minX = Infinity, maxX = -Infinity;
+    planted.forEach(item => {
+      if (item.p.tipX < minX) minX = item.p.tipX;
+      if (item.p.tipX > maxX) maxX = item.p.tipX;
+    });
+    const overSupport = bothEnds && planted.length >= 2 && com.x >= minX - 4 && com.x <= maxX + 4;
 
     if (!planted.length) {
       belly = true;
-      body.tilt = approach(body.tilt, 0.85, 0.08);
+      body.tilt = approach(body.tilt, 0.9, 0.1);
       body.y = bellyY;
-    } else if (!front.length && rear.length) {
-      belly = false;
-      body.tilt = approach(body.tilt, -0.55, 0.06);
-    } else if (front.length && !rear.length) {
-      belly = false;
-      body.tilt = approach(body.tilt, 0.7, 0.06);
-    } else {
-      let minX = planted[0].p.tipX, maxX = planted[0].p.tipX;
-      planted.forEach(item => {
-        if (item.p.tipX < minX) minX = item.p.tipX;
-        if (item.p.tipX > maxX) maxX = item.p.tipX;
-      });
-      const span = maxX - minX;
-      if (span < 22 || comX < minX - 8 || comX > maxX + 8) {
-        belly = true;
-        body.tilt = approach(body.tilt, 0.9, 0.08);
-        body.y = bellyY;
-      } else {
-        belly = onBelly && Math.abs(body.tilt) > 0.7;
-        body.tilt = approach(body.tilt, 0, 0.05);
-      }
-    }
-
-    if (Math.abs(body.tilt) > 0.82) {
+    } else if (!overSupport) {
       belly = true;
+      const tipDir = com.x > (isFinite(maxX) ? maxX : com.x) ? 0.95 : -0.7;
+      body.tilt = approach(body.tilt, tipDir, 0.1);
       body.y = bellyY;
+    } else {
+      belly = false;
+      body.tilt = approach(body.tilt, 0, 0.05);
     }
 
     posed = pose();
     const after = contacts(posed);
-    let low2 = -Infinity;
-    after.forEach(item => { if (item.p.tipY > low2) low2 = item.p.tipY; });
-    if (low2 > -Infinity && !belly) body.y += (FLOOR - 3 - low2);
+    if (!belly) {
+      let low2 = -Infinity;
+      after.forEach(item => { if (item.p.tipY > low2) low2 = item.p.tipY; });
+      if (low2 > -Infinity) body.y += (FLOOR - 3 - low2);
+    }
     if (body.y > bellyY) body.y = bellyY;
 
     const head = byId("head");
     const hp = pose()[head.id];
     const headDrag = belly && hp && hp.tipY >= FLOOR - 10;
+    const plantedNow = after.filter(item => item.p.tipY >= FLOOR - 8);
 
     return {
-      planted: after.filter(item => item.p.tipY >= FLOOR - 8).length,
-      front: after.filter(item => item.side === "front" && item.p.tipY >= FLOOR - 8).length,
-      rear: after.filter(item => item.side === "rear" && item.p.tipY >= FLOOR - 8).length,
+      planted: plantedNow.length,
+      front: plantedNow.filter(item => item.side === "front").length,
+      rear: plantedNow.filter(item => item.side === "rear").length,
       belly: belly,
+      stand: !belly && plantedNow.some(i => i.side === "front") && plantedNow.some(i => i.side === "rear"),
       headDrag: headDrag
     };
   }
@@ -677,11 +690,11 @@
       if (phase === "walk") {
         stepGait();
         g = settleGravity();
-        if (g.belly) {
+        if (g.belly || !g.stand) {
           phase = "crawl";
           stall = 0;
-        } else if (g.planted > 0) {
-          worldX += 1.15 + g.planted * 0.15;
+        } else if (g.stand) {
+          worldX += 1.15 + Math.min(g.planted, 4) * 0.1;
           lastPlantX = worldX;
           stall = 0;
         } else {

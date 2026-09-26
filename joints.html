@@ -282,16 +282,34 @@
     return { x: mx / m, y: my / m };
   }
 
+  function lowestPoint(posed) {
+    let lowest = body.y + 16;
+    contacts(posed).forEach(item => {
+      if (item.p.tipY > lowest) lowest = item.p.tipY;
+    });
+    const head = posed.head;
+    if (head && head.tipY > lowest) lowest = head.tipY;
+    return lowest;
+  }
+
+  function liftOutOfFloor() {
+    const posed = pose();
+    const lowest = lowestPoint(posed);
+    if (lowest > FLOOR - 2) body.y -= (lowest - (FLOOR - 2));
+    if (body.y > FLOOR - 16) body.y = FLOOR - 16;
+  }
+
   function settleGravity() {
-    const bellyY = FLOOR - 18;
     const posed0 = pose();
     const foots = contacts(posed0);
     let lowest = -Infinity;
     foots.forEach(item => { if (item.p.tipY > lowest) lowest = item.p.tipY; });
     if (lowest === -Infinity) lowest = body.y + 18;
-    const drop = FLOOR - 3 - lowest;
+    let drop = FLOOR - 3 - lowest;
+    if (drop > 6) drop = 6;
+    if (drop < -6) drop = -6;
 
-    const wouldPlant = foots.filter(item => item.p.tipY + drop >= FLOOR - 8);
+    const wouldPlant = foots.filter(item => item.p.tipY + drop >= FLOOR - 10);
     const front = wouldPlant.filter(item => item.side === "front");
     const rear = wouldPlant.filter(item => item.side === "rear");
     const com = massCenter(posed0);
@@ -301,22 +319,24 @@
       if (item.p.tipX > maxX) maxX = item.p.tipX;
     });
     const bothEnds = front.length > 0 && rear.length > 0;
-    const overSupport = bothEnds && com.x >= minX - 2 && com.x <= maxX + 2;
+    const comOff = bothEnds && (com.x < minX - 24 || com.x > maxX + 24);
+    const overSupport = bothEnds && !comOff;
 
     if (overSupport) {
       belly = false;
       body.tilt = approach(body.tilt, 0, 0.08);
       body.y += drop;
-      if (body.y > bellyY) body.y = bellyY;
     } else {
       belly = true;
       body.tilt = approach(body.tilt, 0, 0.22);
-      body.y = approach(body.y, bellyY, 10);
+      body.y += Math.min(6, Math.max(0, drop));
     }
+
+    liftOutOfFloor();
 
     const posed = pose();
     const after = contacts(posed);
-    const plantedNow = after.filter(item => item.p.tipY >= FLOOR - 8);
+    const plantedNow = after.filter(item => item.p.tipY >= FLOOR - 10);
     const head = byId("head");
     const hp = posed[head.id];
     const headDrag = belly && hp && hp.tipY >= FLOOR - 10;
